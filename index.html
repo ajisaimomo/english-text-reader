@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>英語テキスト読み上げアプリ（完全版・文章単位ハイライト・3500文字）</title>
+  <title>英語テキスト読み上げ</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; background:#f5f7fb; padding: 24px; }
@@ -47,13 +47,13 @@
 </head>
 <body>
   <div class="container">
-    <h1>🎧 英語テキスト読み上げ（完全版：文章ごとハイライト・3500文字）</h1>
-    <p class="hint">最大 <b>3500文字</b>。文章単位で読み上げ・ハイライト。停止・テキストクリア・全リセット対応。<br>目安の所要時間をリアルタイムで表示します（推定）。</p>
+    <h1>🎧 英語テキスト読み上げ</h1>
+    <p class="hint">最大 <b>10,000文字</b>。文章単位で読み上げ・ハイライト。停止・テキストクリア・全リセット対応。<br>目安の所要時間をリアルタイムで表示します（推定）。</p>
 
     <label for="text">テキスト</label>
-    <textarea id="text" maxlength="3500" placeholder="Enter English text here (up to 3500 chars)..."></textarea>
+    <textarea id="text" maxlength="10000" placeholder="Enter English text here (up to 10,000 chars)..."></textarea>
     <div class="meta">
-      <div class="char-counter" id="counter">0 / 3500</div>
+      <div class="char-counter" id="counter">0 / 10000</div>
       <div class="estimate" id="estimate">所要時間の目安: 00:00</div>
     </div>
 
@@ -84,7 +84,7 @@
   </div>
 
   <script>
-    const MAX_LEN = 3500;
+    const MAX_LEN = 10000;
     const BASE_WPM = 140; // 推定ベース
 
     const synthesis = window.speechSynthesis;
