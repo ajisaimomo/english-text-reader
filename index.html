@@ -26,7 +26,8 @@
     .play { background:#2ecc71; border-color:#2ecc71; color:#fff; }
     .pause { background:#ffb74d; border-color:#ffb74d; color:#fff; }
     .stop { background:#e74c3c; border-color:#e74c3c; color:#fff; }
-    .clear { background:#9e9e9e; border-color:#9e9e9e; color:#fff; }
+    .prev { background:#6c5ce7; border-color:#6c5ce7; color:#fff; }
+    .repeat { background:#ff7675; border-color:#ff7675; color:#fff; }
     .reset { background:#556cd6; border-color:#556cd6; color:#fff; }
     .meta { display:flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px; }
     .char-counter { color:#666; font-size:.85rem; }
@@ -37,10 +38,8 @@
     }
     .sentence { padding: 2px 3px; border-radius: 4px; }
     .sentence.highlight { background: #ffeb3b; }
-    .statusbar { display:flex; justify-content: space-between; align-items:center; margin-top: 12px; }
-    .status { padding: 6px 10px; border-radius: 8px; font-weight:600; color:#2e7d2e; background:#eaf6ea; border:1px solid #b8e0b8; }
-    .status.speaking { color:#8a4b00; background:#fff3e0; border-color:#ffd9a8; }
-    .status.paused { color:#0b60b0; background:#e9f3ff; border-color:#cfe4ff; }
+    .controls-info { display:flex; justify-content: space-between; align-items:center; margin-top: 12px; }
+    .progress-info { color:#444; font-size:.9rem; font-weight:600; }
     .timer { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 1.3rem; }
     .footnote { margin-top: 12px; color:#666; font-size:.85rem; }
   </style>
@@ -48,7 +47,7 @@
 <body>
   <div class="container">
     <h1>🎧 英語テキスト読み上げ</h1>
-    <p class="hint">最大 <b>10,000文字</b>。文章単位で読み上げ・ハイライト。停止・テキストクリア・全リセット対応。<br>目安の所要時間をリアルタイムで表示します（推定）。</p>
+    <p class="hint">最大 <b>10,000文字</b>。文章単位で読み上げ・ハイライト。リピート機能でシャドーイング練習対応。<br>目安の所要時間をリアルタイムで表示します（推定）。</p>
 
     <label for="text">テキスト</label>
     <textarea id="text" maxlength="10000" placeholder="Enter English text here (up to 10,000 chars)..."></textarea>
@@ -69,14 +68,15 @@
       <button id="play" class="play">▶ 再生</button>
       <button id="pause" class="pause" disabled>⏸ 一時停止</button>
       <button id="stop" class="stop" disabled>⏹ 停止</button>
-      <button id="clearText" class="clear">🧽 クリア（テキスト）</button>
-      <button id="resetAll" class="reset">🔁 リセット（全部）</button>
+      <button id="previous" class="prev" disabled>⏪ 前の文</button>
+      <button id="repeat" class="repeat" disabled>🔄 リピート</button>
+      <button id="reset" class="reset">🔄 リセット</button>
     </div>
 
     <div class="viewer" id="viewer" aria-live="polite"></div>
 
-    <div class="statusbar">
-      <div class="status" id="status">準備完了</div>
+    <div class="controls-info">
+      <div class="progress-info" id="progress">準備完了</div>
       <div class="timer" id="timer">00:00</div>
     </div>
 
@@ -85,7 +85,7 @@
 
   <script>
     const MAX_LEN = 10000;
-    const BASE_WPM = 140; // 推定ベース
+    const BASE_WPM = 140;
 
     const synthesis = window.speechSynthesis;
 
@@ -95,50 +95,63 @@
     const elPlay = document.getElementById('play');
     const elPause = document.getElementById('pause');
     const elStop = document.getElementById('stop');
-    const elClearText = document.getElementById('clearText');
-    const elResetAll = document.getElementById('resetAll');
+    const elPrevious = document.getElementById('previous');
+    const elRepeat = document.getElementById('repeat');
+    const elReset = document.getElementById('reset');
     const elViewer = document.getElementById('viewer');
-    const elStatus = document.getElementById('status');
+    const elProgress = document.getElementById('progress');
     const elTimer = document.getElementById('timer');
     const elEstimate = document.getElementById('estimate');
 
+    // シンプルな状態管理
     let sentences = [];
-    let idx = 0;
+    let currentIndex = 0;
+    let isPlaying = false;
     let isPaused = false;
+    let isRepeating = false;
     let currentUtterance = null;
 
-    // timer
+    // タイマー関連
     let startTime = 0;
     let elapsed = 0;
     let timerHandle = null;
 
     function startTimer() {
-      startTime = Date.now();
-      timerHandle = setInterval(() => {
-        const t = elapsed + (Date.now() - startTime);
-        const m = Math.floor(t / 60000);
-        const s = Math.floor((t % 60000) / 1000);
-        elTimer.textContent = `${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
-      }, 100);
+      if (!timerHandle) {
+        startTime = Date.now();
+        timerHandle = setInterval(() => {
+          const t = elapsed + (Date.now() - startTime);
+          const m = Math.floor(t / 60000);
+          const s = Math.floor((t % 60000) / 1000);
+          elTimer.textContent = `${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
+        }, 100);
+      }
     }
-    function stopTimer() { if (timerHandle) { clearInterval(timerHandle); timerHandle = null; } }
-    function resetTimer() { stopTimer(); elapsed = 0; elTimer.textContent = '00:00'; }
 
-    function setStatus(state) {
-      elStatus.className = 'status';
-      if (state === 'speaking') { elStatus.classList.add('speaking'); elStatus.textContent = '読み上げ中...'; }
-      else if (state === 'paused') { elStatus.classList.add('paused'); elStatus.textContent = '一時停止中'; }
-      else { elStatus.textContent = '準備完了'; }
+    function pauseTimer() {
+      if (timerHandle) {
+        elapsed += (Date.now() - startTime);
+        clearInterval(timerHandle);
+        timerHandle = null;
+      }
+    }
+
+    function resetTimer() {
+      if (timerHandle) {
+        clearInterval(timerHandle);
+        timerHandle = null;
+      }
+      elapsed = 0;
+      elTimer.textContent = '00:00';
     }
 
     function escapeHTML(str) {
       return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
     }
 
-    // 文章に分割（英語を想定。終端記号 . ! ? と改行で区切り）
     function splitIntoSentences(text) {
       const raw = text.match(/[^.!?\n]+(?:[.!?]+|(?:\n+)|$)/g) || [];
-      return raw.map(s => s.replace(/\s+$/,'')).map(s => s.trim()).filter(Boolean);
+      return raw.map(s => s.trim()).filter(Boolean);
     }
 
     function renderSentences(list) {
@@ -146,95 +159,103 @@
       elViewer.innerHTML = html;
     }
 
+    function updateProgress() {
+      if (sentences.length > 0) {
+        const progress = `文章 ${currentIndex + 1}/${sentences.length}`;
+        const repeatInfo = isRepeating ? ` (リピート中)` : '';
+        elProgress.textContent = progress + repeatInfo;
+      } else {
+        elProgress.textContent = '準備完了';
+      }
+    }
+
     function clearHighlight() {
-      const prev = elViewer.querySelector('.sentence.highlight');
-      if (prev) prev.classList.remove('highlight');
+      document.querySelectorAll('.sentence.highlight').forEach(el => {
+        el.classList.remove('highlight');
+      });
     }
 
     function highlightCurrent() {
       clearHighlight();
-      const span = document.getElementById(`sent-${idx}`);
+      const span = document.getElementById(`sent-${currentIndex}`);
       if (span) {
         span.classList.add('highlight');
         span.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
     }
 
-    // 再生（文ごとに utterance を生成）
+    function updateButtons() {
+      elPlay.disabled = isPlaying;
+      elPause.disabled = !isPlaying;
+      elStop.disabled = !isPlaying && !isPaused;
+      elPrevious.disabled = (!isPlaying && !isPaused) || currentIndex === 0;
+      elRepeat.disabled = !isPlaying && !isPaused;
+    }
+
     function speakCurrentSentence() {
-      if (idx >= sentences.length) {
+      if (currentIndex >= sentences.length) {
         // 完了
-        stopTimer();
-        elapsed += (Date.now() - startTime);
-        setStatus('ready');
-        elPlay.disabled = false;
-        elPause.disabled = true;
-        elStop.disabled = true;
-        currentUtterance = null;
+        isPlaying = false;
+        isPaused = false;
+        pauseTimer();
+        updateButtons();
+        updateProgress();
+        clearHighlight();
         return;
       }
 
-      const text = sentences[idx];
+      const text = sentences[currentIndex];
       highlightCurrent();
+      updateProgress();
 
       currentUtterance = new SpeechSynthesisUtterance(text);
       currentUtterance.lang = 'en-US';
       currentUtterance.rate = parseFloat(elRate.value);
       currentUtterance.pitch = 1;
 
-      currentUtterance.onstart = () => { setStatus('speaking'); };
       currentUtterance.onend = () => {
-        if (!isPaused) {
-          idx += 1;
-          speakCurrentSentence();
+        if (isRepeating) {
+          // リピート完了 → 一時停止状態に戻る
+          isRepeating = false;
+          isPlaying = false;
+          isPaused = true;
+          pauseTimer();
+          updateButtons();
+          updateProgress();
+        } else if (isPlaying) {
+          // 通常再生 → 次の文へ
+          currentIndex++;
+          setTimeout(() => speakCurrentSentence(), 300);
         }
       };
-      currentUtterance.onerror = (e) => {
-        console.error('speech error', e);
-        if (!isPaused) {
-          idx += 1;
-          speakCurrentSentence();
+
+      currentUtterance.onerror = () => {
+        if (isRepeating) {
+          // リピートエラー → 一時停止状態に戻る
+          isRepeating = false;
+          isPlaying = false;
+          isPaused = true;
+          pauseTimer();
+          updateButtons();
+          updateProgress();
+        } else if (isPlaying) {
+          // 通常再生エラー → 次の文へ
+          currentIndex++;
+          setTimeout(() => speakCurrentSentence(), 300);
         }
       };
 
       synthesis.speak(currentUtterance);
     }
 
-    function stopSpeakingKeepText() {
-      synthesis.cancel();
-      stopTimer();
-      elapsed += (Date.now() - startTime);
-      setStatus('ready');
-      isPaused = false;
-      currentUtterance = null;
-      clearHighlight();
-      elPlay.disabled = false;
-      elPause.disabled = true;
-      elStop.disabled = true;
-    }
-
-    function resetAll() {
-      synthesis.cancel();
-      stopTimer();
-      resetTimer();
-      setStatus('ready');
-      isPaused = false;
-      currentUtterance = null;
-      sentences = [];
-      idx = 0;
-      elViewer.innerHTML = "";
-      elPlay.disabled = false;
-      elPause.disabled = true;
-      elStop.disabled = true;
-    }
-
-    // --- Estimator ---
+    // 推定時間計算
     function mmss(minutesFloat) {
       const totalSeconds = Math.max(0, Math.round(minutesFloat * 60));
       const m = Math.floor(totalSeconds / 60);
       const s = totalSeconds % 60;
       return `${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
     }
+
     function updateEstimate() {
       const text = elText.value;
       const words = (text.trim().match(/\b[\w'-]+\b/g) || []).length;
@@ -244,82 +265,112 @@
       elEstimate.textContent = `所要時間の目安: ${mmss(minutes)}（約 ${words} words, 速度 ${rate}x）`;
     }
 
-    // --- UI handlers ---
+    // UI イベントハンドラ
     elPlay.addEventListener('click', () => {
       const raw = elText.value.trim();
-      if (!raw) { alert('テキストを入力してください。'); return; }
-      if (!('speechSynthesis' in window)) { alert('音声合成機能が使えません。対応ブラウザでお試しください。'); return; }
-
-      // 一時停止からの再開
-      if (isPaused && synthesis.speaking) {
-        isPaused = false;
-        synthesis.resume();
-        startTimer();
-        setStatus('speaking');
-        elPlay.disabled = true;
-        elPause.disabled = false;
-        elStop.disabled = false;
-        return;
+      if (!raw) { 
+        alert('テキストを入力してください。'); 
+        return; 
+      }
+      
+      if (!('speechSynthesis' in window)) { 
+        alert('音声合成機能が使えません。対応ブラウザでお試しください。'); 
+        return; 
       }
 
-      // 新規開始（常に先頭から）
-      synthesis.cancel(); // 念のため既存キューをクリア
-      idx = 0;
-      isPaused = false;
-      sentences = splitIntoSentences(raw);
-      if (sentences.length === 0) { alert('読み上げる文章が見つかりません。'); return; }
-      renderSentences(sentences);
-      highlightCurrent();
-
-      resetTimer();
-      startTimer();
-      setStatus('speaking');
-      elPlay.disabled = true;
-      elPause.disabled = false;
-      elStop.disabled = false;
-
-      speakCurrentSentence();
+      if (isPaused) {
+        // 一時停止からの再開
+        isPaused = false;
+        isPlaying = true;
+        startTimer();
+        updateButtons();
+        speakCurrentSentence();
+      } else {
+        // 新規開始
+        synthesis.cancel();
+        sentences = splitIntoSentences(raw);
+        if (sentences.length === 0) { 
+          alert('読み上げる文章が見つかりません。'); 
+          return; 
+        }
+        
+        renderSentences(sentences);
+        currentIndex = 0;
+        isPlaying = true;
+        isPaused = false;
+        isRepeating = false;
+        
+        resetTimer();
+        startTimer();
+        updateButtons();
+        speakCurrentSentence();
+      }
     });
 
     elPause.addEventListener('click', () => {
-      if (synthesis.speaking && !isPaused) {
-        synthesis.pause();
+      if (isPlaying) {
+        synthesis.cancel();
+        isPlaying = false;
         isPaused = true;
-        stopTimer();
-        elapsed += (Date.now() - startTime);
-        setStatus('paused');
-        elPlay.disabled = false; // 再開ボタンとして機能
-        elPause.disabled = true;
-        elStop.disabled = false;
+        pauseTimer();
+        updateButtons();
+        updateProgress();
       }
     });
 
     elStop.addEventListener('click', () => {
-      stopSpeakingKeepText();
-    });
-
-    elClearText.addEventListener('click', () => {
       synthesis.cancel();
+      isPlaying = false;
       isPaused = false;
-      currentUtterance = null;
-      elText.value = "";
-      elCounter.textContent = `0 / ${MAX_LEN}`;
-      sentences = [];
-      idx = 0;
-      elViewer.innerHTML = "";
-      stopTimer();
-      resetTimer();
-      setStatus('ready');
-      elPlay.disabled = false;
-      elPause.disabled = true;
-      elStop.disabled = true;
-      updateEstimate();
+      isRepeating = false;
+      currentIndex = 0;
+      pauseTimer();
+      updateButtons();
+      updateProgress();
+      clearHighlight();
     });
 
-    elResetAll.addEventListener('click', () => {
-      resetAll();
+    elPrevious.addEventListener('click', () => {
+      if (currentIndex > 0) {
+        synthesis.cancel();
+        currentIndex--;
+        isRepeating = false;
+        
+        if (isPaused) {
+          highlightCurrent();
+          updateProgress();
+        } else if (isPlaying) {
+          speakCurrentSentence();
+        }
+        updateButtons();
+      }
+    });
+
+    elRepeat.addEventListener('click', () => {
+      if (sentences.length > 0 && (isPaused || isPlaying)) {
+        synthesis.cancel();
+        isRepeating = true;
+        isPlaying = true;
+        isPaused = false;
+        startTimer();
+        updateButtons();
+        speakCurrentSentence();
+      }
+    });
+
+    elReset.addEventListener('click', () => {
+      synthesis.cancel();
+      isPlaying = false;
+      isPaused = false;
+      isRepeating = false;
+      currentIndex = 0;
+      sentences = [];
       elText.value = "";
       elCounter.textContent = `0 / ${MAX_LEN}`;
+      elViewer.innerHTML = "";
+      resetTimer();
+      updateButtons();
+      updateProgress();
       updateEstimate();
     });
 
@@ -334,16 +385,15 @@
       updateEstimate();
     });
 
-    // 速度変更時は推定時間だけ即反映（実際のTTS速度も次の文から反映）
+    // 速度変更時の推定時間更新
     elRate.addEventListener('change', () => {
       updateEstimate();
     });
 
-    // 初期状態
-    setStatus('ready');
+    // 初期化
+    updateButtons();
+    updateProgress();
     elCounter.textContent = `0 / ${MAX_LEN}`;
-    elPause.disabled = true;
-    elStop.disabled = true;
     updateEstimate();
   </script>
 </body>
