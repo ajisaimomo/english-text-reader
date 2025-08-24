@@ -213,30 +213,46 @@
       elRepeat.disabled = !canNavigate;
     }
 
-    // 堅牢な英語音声選択（静寂版）
+    // アメリカ英語優先の音声選択
     function getEnglishVoice() {
       const voices = speechSynthesis.getVoices();
       if (!voices.length) return null;
 
-      // ブラウザ既定が英語ならそれでOK
+      // 1. アメリカ英語(en-US)を最優先で検索
+      const usVoices = voices.filter(v => 
+        v.lang.toLowerCase() === 'en-us' || 
+        v.lang.toLowerCase().startsWith('en-us')
+      );
+      
+      if (usVoices.length > 0) {
+        // アメリカ英語の女性音声を探す
+        const usFemaleVoice = usVoices.find(v => {
+          const name = v.name.toLowerCase();
+          return name.includes('female') || 
+                 name.includes('samantha') || 
+                 name.includes('susan') ||
+                 name.includes('allison') ||
+                 name.includes('ava') ||
+                 name.includes('zira'); // Windows の女性音声
+        });
+        
+        if (usFemaleVoice) {
+          return usFemaleVoice;
+        }
+        
+        // 女性音声がなければアメリカ英語の最初の音声
+        return usVoices[0];
+      }
+
+      // 2. フォールバック：ブラウザ既定が英語ならそれを使用
       const def = voices.find(v => v.default && /^en(-|$)/i.test(v.lang));
       if (def) {
         return def;
       }
 
-      // 言語優先で英語音声を選択
+      // 3. 最終フォールバック：任意の英語音声
       const en = voices.filter(v => /^en(-|$)/i.test(v.lang));
       if (en.length) {
-        // 女性音声があれば優先（軽度の優先処理）
-        const femaleVoice = en.find(v => {
-          const name = v.name.toLowerCase();
-          return name.includes('female') || name.includes('samantha') || name.includes('victoria') || name.includes('susan');
-        });
-        
-        if (femaleVoice) {
-          return femaleVoice;
-        }
-        
         return en[0];
       }
       
