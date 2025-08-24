@@ -27,6 +27,7 @@
     .pause { background:#ffb74d; border-color:#ffb74d; color:#fff; }
     .stop { background:#e74c3c; border-color:#e74c3c; color:#fff; }
     .prev { background:#6c5ce7; border-color:#6c5ce7; color:#fff; }
+    .next { background:#00b894; border-color:#00b894; color:#fff; }
     .repeat { background:#ff7675; border-color:#ff7675; color:#fff; }
     .reset { background:#556cd6; border-color:#556cd6; color:#fff; }
     .meta { display:flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px; }
@@ -60,15 +61,20 @@
       <label for="rate">再生速度</label>
       <select id="rate" aria-label="Playback rate">
         <option value="0.5">0.5x</option>
-        <option value="0.75">0.75x</option>
+        <option value="0.6">0.6x</option>
+        <option value="0.7">0.7x</option>
+        <option value="0.8">0.8x</option>
+        <option value="0.9">0.9x</option>
         <option value="1" selected>1.0x</option>
-        <option value="1.25">1.25x</option>
+        <option value="1.1">1.1x</option>
+        <option value="1.2">1.2x</option>
       </select>
 
       <button id="play" class="play">▶ 再生</button>
-      <button id="pause" class="pause" disabled>⏸ 一時停止</button>
       <button id="stop" class="stop" disabled>⏹ 停止</button>
+      <button id="restart" class="reset">⏮ 最初から</button>
       <button id="previous" class="prev" disabled>⏪ 前の文</button>
+      <button id="next" class="next" disabled>⏩ 次の文</button>
       <button id="repeat" class="repeat" disabled>🔄 リピート</button>
       <button id="reset" class="reset">🔄 リセット</button>
     </div>
@@ -80,7 +86,7 @@
       <div class="timer" id="timer">00:00</div>
     </div>
 
-    <div class="footnote">※ 推定時間は「単語数 ÷ (基準WPM×再生速度)」で計算しています。基準WPMは <b>140</b> としており、実際のTTS・文構造により前後します。<br>※ ブラウザの音声合成APIを使用します（Chrome 推奨）。</div>
+    <div class="footnote">※ 推定時間は「単語数 ÷ (基準WPM×再生速度)」で計算しています。基準WPMは <b>140</b> としており、実際のTTS・文構造により前後します。<br>※ ブラウザの音声合成APIを使用します（Chrome 推奨）。英語音声エンジンを自動選択します。</div>
   </div>
 
   <script>
@@ -93,9 +99,10 @@
     const elCounter = document.getElementById('counter');
     const elRate = document.getElementById('rate');
     const elPlay = document.getElementById('play');
-    const elPause = document.getElementById('pause');
     const elStop = document.getElementById('stop');
+    const elRestart = document.getElementById('restart');
     const elPrevious = document.getElementById('previous');
+    const elNext = document.getElementById('next');
     const elRepeat = document.getElementById('repeat');
     const elReset = document.getElementById('reset');
     const elViewer = document.getElementById('viewer');
@@ -103,18 +110,28 @@
     const elTimer = document.getElementById('timer');
     const elEstimate = document.getElementById('estimate');
 
-    // シンプルな状態管理
+    // プロ仕様の状態管理（スマホ対応）
     let sentences = [];
     let currentIndex = 0;
-    let isPlaying = false;
-    let isPaused = false;
-    let isRepeating = false;
+    let action = 'stopped'; // 'stopped' | 'playing' | 'paused_like' | 'navigating'
+    let playId = 0; // 発話セッション識別子
+    let suppressAdvance = false; // onend での次送り禁止ブレーキ
     let currentUtterance = null;
 
     // タイマー関連
     let startTime = 0;
     let elapsed = 0;
     let timerHandle = null;
+
+    // 連打デバウンス
+    let clickLock = false;
+    function withClickLock(fn) {
+      if (clickLock) return;
+      clickLock = true;
+      try { fn(); } finally {
+        setTimeout(() => { clickLock = false; }, 250);
+      }
+    }
 
     function startTimer() {
       if (!timerHandle) {
@@ -162,8 +179,11 @@
     function updateProgress() {
       if (sentences.length > 0) {
         const progress = `文章 ${currentIndex + 1}/${sentences.length}`;
-        const repeatInfo = isRepeating ? ` (リピート中)` : '';
-        elProgress.textContent = progress + repeatInfo;
+        let statusInfo = '';
+        if (action === 'paused_like') statusInfo = ' (停止中)';
+        else if (action === 'playing') statusInfo = ' (再生中)';
+        else if (action === 'repeating') statusInfo = ' (リピート中)';
+        elProgress.textContent = progress + statusInfo;
       } else {
         elProgress.textContent = '準備完了';
       }
@@ -185,18 +205,48 @@
     }
 
     function updateButtons() {
-      elPlay.disabled = isPlaying;
-      elPause.disabled = !isPlaying;
-      elStop.disabled = !isPlaying && !isPaused;
-      elPrevious.disabled = (!isPlaying && !isPaused) || currentIndex === 0;
-      elRepeat.disabled = !isPlaying && !isPaused;
+      elPlay.disabled = action === 'playing' || action === 'repeating';
+      elStop.disabled = action === 'stopped';
+      const canNavigate = sentences.length > 0;
+      elPrevious.disabled = !canNavigate || currentIndex === 0;
+      elNext.disabled = !canNavigate || currentIndex >= sentences.length - 1;
+      elRepeat.disabled = !canNavigate;
+    }
+
+    // 堅牢な英語音声選択（静寂版）
+    function getEnglishVoice() {
+      const voices = speechSynthesis.getVoices();
+      if (!voices.length) return null;
+
+      // ブラウザ既定が英語ならそれでOK
+      const def = voices.find(v => v.default && /^en(-|$)/i.test(v.lang));
+      if (def) {
+        return def;
+      }
+
+      // 言語優先で英語音声を選択
+      const en = voices.filter(v => /^en(-|$)/i.test(v.lang));
+      if (en.length) {
+        // 女性音声があれば優先（軽度の優先処理）
+        const femaleVoice = en.find(v => {
+          const name = v.name.toLowerCase();
+          return name.includes('female') || name.includes('samantha') || name.includes('victoria') || name.includes('susan');
+        });
+        
+        if (femaleVoice) {
+          return femaleVoice;
+        }
+        
+        return en[0];
+      }
+      
+      return null;
     }
 
     function speakCurrentSentence() {
       if (currentIndex >= sentences.length) {
         // 完了
-        isPlaying = false;
-        isPaused = false;
+        action = 'stopped';
         pauseTimer();
         updateButtons();
         updateProgress();
@@ -205,6 +255,8 @@
       }
 
       const text = sentences[currentIndex];
+      const id = ++playId; // セッションID生成
+      
       highlightCurrent();
       updateProgress();
 
@@ -212,39 +264,81 @@
       currentUtterance.lang = 'en-US';
       currentUtterance.rate = parseFloat(elRate.value);
       currentUtterance.pitch = 1;
+      currentUtterance.volume = 1.0;
+      currentUtterance.playId = id; // セッション識別用
+
+      // 英語音声の選択
+      const englishVoice = getEnglishVoice();
+      if (englishVoice) {
+        currentUtterance.voice = englishVoice;
+      }
+
+      // 実際に喋り始めた時点でタイマー開始
+      currentUtterance.onstart = () => {
+        if (action === 'playing') {
+          startTimer();
+        }
+      };
 
       currentUtterance.onend = () => {
-        if (isRepeating) {
-          // リピート完了 → 一時停止状態に戻る
-          isRepeating = false;
-          isPlaying = false;
-          isPaused = true;
+        // 🛡️ スマホ対応：古いセッション・意図しない進行を防ぐ
+        if (currentUtterance.playId !== playId) return;
+        if (suppressAdvance) return;
+        
+        // リピート時は停止状態にして、勝手に進まない
+        if (action === 'repeating') {
+          action = 'paused_like';
           pauseTimer();
           updateButtons();
           updateProgress();
-        } else if (isPlaying) {
-          // 通常再生 → 次の文へ
-          currentIndex++;
-          setTimeout(() => speakCurrentSentence(), 300);
+          return;
+        }
+        
+        if (action !== 'playing') return;
+
+        // 通常再生のみ次へ
+        currentIndex++;
+        if (currentIndex < sentences.length) {
+          setTimeout(() => speakCurrentSentence(), 300); // 次の文
+        } else {
+          action = 'stopped';
+          pauseTimer();
+          updateButtons();
+          updateProgress();
+          clearHighlight();
         }
       };
 
       currentUtterance.onerror = () => {
-        if (isRepeating) {
-          // リピートエラー → 一時停止状態に戻る
-          isRepeating = false;
-          isPlaying = false;
-          isPaused = true;
+        // エラー時も同じガードで安全に処理
+        if (currentUtterance.playId !== playId) return;
+        if (suppressAdvance) return;
+        
+        // リピート時は停止状態にして、勝手に進まない
+        if (action === 'repeating') {
+          action = 'paused_like';
           pauseTimer();
           updateButtons();
           updateProgress();
-        } else if (isPlaying) {
-          // 通常再生エラー → 次の文へ
-          currentIndex++;
+          return;
+        }
+        
+        if (action !== 'playing') return;
+        
+        // エラー時は次の文へ
+        currentIndex++;
+        if (currentIndex < sentences.length) {
           setTimeout(() => speakCurrentSentence(), 300);
+        } else {
+          action = 'stopped';
+          pauseTimer();
+          updateButtons();
+          updateProgress();
+          clearHighlight();
         }
       };
 
+      suppressAdvance = false; // この再生は「進める」可能性あり
       synthesis.speak(currentUtterance);
     }
 
@@ -265,7 +359,7 @@
       elEstimate.textContent = `所要時間の目安: ${mmss(minutes)}（約 ${words} words, 速度 ${rate}x）`;
     }
 
-    // UI イベントハンドラ
+    // ▶ 再生：現在のハイライト文の先頭から再生
     elPlay.addEventListener('click', () => {
       const raw = elText.value.trim();
       if (!raw) { 
@@ -278,91 +372,126 @@
         return; 
       }
 
-      if (isPaused) {
-        // 一時停止からの再開
-        isPaused = false;
-        isPlaying = true;
-        startTimer();
-        updateButtons();
-        speakCurrentSentence();
-      } else {
-        // 新規開始
-        synthesis.cancel();
+      // 新規テキストの場合は解析
+      if (sentences.length === 0) {
         sentences = splitIntoSentences(raw);
         if (sentences.length === 0) { 
           alert('読み上げる文章が見つかりません。'); 
           return; 
         }
-        
         renderSentences(sentences);
         currentIndex = 0;
-        isPlaying = true;
-        isPaused = false;
-        isRepeating = false;
-        
-        resetTimer();
-        startTimer();
-        updateButtons();
-        speakCurrentSentence();
+        highlightCurrent(); // 初回ハイライト表示
       }
-    });
-
-    elPause.addEventListener('click', () => {
-      if (isPlaying) {
-        synthesis.cancel();
-        isPlaying = false;
-        isPaused = true;
-        pauseTimer();
-        updateButtons();
-        updateProgress();
-      }
-    });
-
-    elStop.addEventListener('click', () => {
+      
+      // 旧発話を完全停止（advance禁止 & ID更新）
+      suppressAdvance = true;
+      playId++;
       synthesis.cancel();
-      isPlaying = false;
-      isPaused = false;
-      isRepeating = false;
-      currentIndex = 0;
+
+      action = 'playing';
+      suppressAdvance = false;
+      resetTimer();
+      updateButtons();
+      speakCurrentSentence(); // currentIndex の文頭から
+    });
+
+    // ⏹ 停止：現在の文で止める（インデックスは維持）
+    elStop.addEventListener('click', () => withClickLock(() => {
+      suppressAdvance = true; // onendでadvanceさせない
+      playId++;
+      synthesis.cancel();
+      action = 'paused_like';
       pauseTimer();
       updateButtons();
       updateProgress();
-      clearHighlight();
-    });
+    }));
 
-    elPrevious.addEventListener('click', () => {
+    // ⏮ 最初から：インデックスを0にして先頭から再生準備
+    elRestart.addEventListener('click', () => withClickLock(() => {
+      suppressAdvance = true;
+      playId++;
+      synthesis.cancel();
+      currentIndex = 0;
+      action = 'stopped';
+      pauseTimer();
+      highlightCurrent();
+      updateButtons();
+      updateProgress();
+    }));
+
+    // ⏪ 前の文：再生中なら移動して継続、停止中なら移動のみ
+    elPrevious.addEventListener('click', () => withClickLock(() => {
       if (currentIndex > 0) {
+        const wasPlaying = action === 'playing' || action === 'repeating';
+        
+        suppressAdvance = true;
+        playId++;
         synthesis.cancel();
         currentIndex--;
-        isRepeating = false;
         
-        if (isPaused) {
-          highlightCurrent();
+        if (wasPlaying) {
+          // 再生中だった場合は移動先から自動再生継続
+          action = 'playing';
+          updateButtons();
           updateProgress();
-        } else if (isPlaying) {
           speakCurrentSentence();
+        } else {
+          // 停止中だった場合は移動のみ
+          action = 'paused_like';
+          pauseTimer();
+          highlightCurrent();
+          updateButtons();
+          updateProgress();
         }
-        updateButtons();
       }
-    });
+    }));
 
-    elRepeat.addEventListener('click', () => {
-      if (sentences.length > 0 && (isPaused || isPlaying)) {
+    // ⏩ 次の文：再生中なら移動して継続、停止中なら移動のみ
+    elNext.addEventListener('click', () => withClickLock(() => {
+      if (currentIndex < sentences.length - 1) {
+        const wasPlaying = action === 'playing' || action === 'repeating';
+        
+        suppressAdvance = true;
+        playId++;
         synthesis.cancel();
-        isRepeating = true;
-        isPlaying = true;
-        isPaused = false;
-        startTimer();
-        updateButtons();
-        speakCurrentSentence();
+        currentIndex++;
+        
+        if (wasPlaying) {
+          // 再生中だった場合は移動先から自動再生継続
+          action = 'playing';
+          updateButtons();
+          updateProgress();
+          speakCurrentSentence();
+        } else {
+          // 停止中だった場合は移動のみ
+          action = 'paused_like';
+          pauseTimer();
+          highlightCurrent();
+          updateButtons();
+          updateProgress();
+        }
       }
-    });
+    }));
 
+    // 🔄 リピート：同じ文章をもう一度再生（完了後は停止状態）
+    elRepeat.addEventListener('click', () => withClickLock(() => {
+      if (sentences.length > 0) {
+        suppressAdvance = true;
+        playId++;
+        synthesis.cancel();
+        action = 'repeating'; // リピート状態
+        updateButtons();
+        speakCurrentSentence(); // 同じ index を読み直し
+      }
+    }));
+
+    // 🔄 リセット：完全初期化
     elReset.addEventListener('click', () => {
+      suppressAdvance = true;
+      playId++;
       synthesis.cancel();
-      isPlaying = false;
-      isPaused = false;
-      isRepeating = false;
+      action = 'stopped';
       currentIndex = 0;
       sentences = [];
       elText.value = "";
@@ -390,11 +519,23 @@
       updateEstimate();
     });
 
+    // 音声リスト初期化（静寂版）
+    function initializeVoices() {
+      // 音声リストの読み込み完了を待つのみ
+      // コンソール出力なし
+    }
+
+    // 音声リスト変更イベントの監視
+    speechSynthesis.addEventListener('voiceschanged', initializeVoices);
+
     // 初期化
     updateButtons();
     updateProgress();
     elCounter.textContent = `0 / ${MAX_LEN}`;
     updateEstimate();
+    
+    // 音声初期化（ページ読み込み時）
+    setTimeout(initializeVoices, 100);
   </script>
 </body>
 </html>
